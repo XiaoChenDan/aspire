@@ -4,6 +4,7 @@
 using System.Net.Sockets;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Dcp.Model;
+using Aspire.Hosting.Dcp.Process;
 using Aspire.Hosting.Lifecycle;
 using k8s;
 
@@ -283,7 +284,49 @@ internal sealed class ApplicationExecutor(DistributedApplicationModel model,
             else
             {
                 exeSpec.ExecutionType = ExecutionType.Process;
-                if (Environment.GetEnvironmentVariable("DOTNET_WATCH") != "1")
+                if (Environment.GetEnvironmentVariable("DOTNET_PUBLISH") == "1")
+                {
+                        #if DEBUG
+                        const string configuration = "Debug";
+#else
+                        const string configuration = "Release";
+#endif
+
+                    string publishPath = Environment.GetEnvironmentVariable("DOTNET_PUBLISH_PATH") ?? $"bin/{configuration}/net8.0/publish/";
+
+                    string[] publishProjects=Environment.GetEnvironmentVariable("DOTNET_PUBLISH_PROJECTS")?
+                        .Split(",", StringSplitOptions.RemoveEmptyEntries) ?? [];
+
+                    if(!publishProjects.Any()||publishProjects.Contains(GetObjectNameForResource(project)))
+                    {
+                        ProcessSpec processSpec = new ProcessSpec("dotnet")
+                        {
+                            WorkingDirectory = Path.GetDirectoryName(projectMetadata.ProjectPath)!,
+                            Arguments = $"publish --configuration {configuration} --output \"{publishPath}\"",
+                            OnOutputData = Console.Out.Write,
+                            OnErrorData = Console.Error.Write,
+                        };
+
+                        (var task, IAsyncDisposable runDisposable) = ProcessUtil.Run(processSpec);
+
+                        task.Wait();
+
+                        if (task.Result.ExitCode != 0)
+                        {
+                            continue;
+                        }
+                    }
+
+                    string dllPath = Path.Combine(
+                        Path.GetDirectoryName(projectMetadata.ProjectPath)!,
+                        publishPath,
+                        $"{GetObjectNameForResource(project)}.dll").Replace("\\", "/");
+
+                    exeSpec.Args = [
+                        dllPath,
+                    ];
+                }
+                else if (Environment.GetEnvironmentVariable("DOTNET_WATCH") != "1")
                 {
                     exeSpec.Args = [
                         "run",
